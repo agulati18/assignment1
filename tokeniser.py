@@ -26,7 +26,7 @@ class Tokenizer:
             pair = max(stats, key=stats.get)
             new_token_id = 256 + i
             
-            print(f"Merging {pair} -> {new_token_id}")
+            print(f"\nMerging {pair} -> {new_token_id}")
             tokens = self._merge_pair(tokens, pair, new_token_id)
             
             self.merges[pair] = new_token_id
@@ -75,6 +75,9 @@ if __name__ == "__main__":
     # Example usage:
     text = "Arsenal have completed the signing of England winger Noni Madueke from Chelsea for an initial fee of £48.5m. The 23-year-old was part of Chelsea's squad at the Club World Cup in the United States but left the camp before last Sunday's 3-0 win against Paris St-Germain in the final to finalise his move to Mikel Arteta's side. Madueke has signed a five-year contract at Emirates Stadium, with his fee rising to just over £50m with add-ons. Humbled and blessed to be here. Thank you to everyone that made this possible, he wrote on Instagram."
     
+    # Print the text 
+    print("Text:", text)
+
     # Create a tokenizer instance
     tokenizer = Tokenizer()
 
