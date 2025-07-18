@@ -1,10 +1,12 @@
-import re
+import regex as re
 
 # The main Tokenizer class
 class Tokenizer:
     """
     A BPE Tokenizer that learns merge rules from a corpus and can then
     encode/decode text using those rules. It operates at the byte level.
+    This implementation is aligned with the GPT-2 paper, which uses a regex
+    pattern for pre-tokenization.
     """
     def __init__(self):
         # self.merges stores the learned merge rules.
@@ -18,13 +20,18 @@ class Tokenizer:
         # e.g., {257: b'e '}
         self.vocab = self._build_vocab()  # int -> bytes
 
+        # GPT-2's regex pattern for pre-tokenization. This is key to its effectiveness.
+        # It splits text into chunks that are "atomic" for the BPE algorithm.
+        # This prevents merges across categories like letters, numbers, and punctuation.
+        self.pat = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+
     def _build_vocab(self):
         # The initial vocabulary is simply the first 256 integers, each mapping
-        # to its corresponding byte value. This ensures that any raw byte stream
-        # can be represented at the start of the tokenization process.
+        # to its corresponding byte value.
         return {i: bytes([i]) for i in range(256)}
 
-    def train(self, text, vocab_size):
+    def train(self, text, vocab_size, verbose=False):
         """
         Trains the tokenizer on a given text to learn merge rules.
 
@@ -35,68 +42,94 @@ class Tokenizer:
         if vocab_size <= 256:
             return  # Nothing to learn if the vocab size is just the base bytes.
 
-        num_merges = vocab_size - 256
-        tokens = list(text.encode("utf-8")) # Start with the raw byte sequence.
+        # 1. Pre-tokenize the text into words/chunks using the regex pattern.
+        text_chunks = re.findall(self.pat, text)
 
-        # This is the core training loop. We perform `num_merges` iterations.
+        # 2. Convert to a vocabulary of byte-encoded words and their frequencies.
+        # The BPE algorithm works on the frequency of subword units within these words.
+        word_freqs = {}
+        for chunk in text_chunks:
+            word_freqs[chunk.encode("utf-8")] = word_freqs.get(chunk.encode("utf-8"), 0) + 1
+
+        # Represent each word as a list of its initial byte-level tokens.
+        splits = {word: list(word) for word in word_freqs}
+        
+        num_merges = vocab_size - 256
         for i in range(num_merges):
-            # 1. Find the most frequent adjacent pair of tokens.
-            stats = self._get_stats(tokens)
-            if not stats:
-                break # Stop if there are no more pairs to merge.
+            # 3. Calculate pair frequencies across the entire vocabulary of words.
+            # This is different from the stream approach; we consider pairs within
+            # each word, weighted by how often that word appears.
+            pair_stats = self._get_pair_stats(splits, word_freqs)
+            if not pair_stats:
+                break
             
-            # This is the "greedy" part of the BPE algorithm. We find the pair
-            # with the highest frequency and merge it. This choice is local
-            # and may not be globally optimal, but it's effective in practice.
-            pair = max(stats, key=stats.get)
+            # 4. Find the most frequent pair to merge.
+            best_pair = max(pair_stats, key=pair_stats.get)
             
-            # 2. Assign a new token ID for this pair.
-            # New tokens are numbered sequentially starting from 256.
+            # 5. Perform the merge.
+            # This involves creating a new token ID and replacing the `best_pair`
+            # in all words in our `splits` dictionary where it occurs.
             new_token_id = 256 + i
+            splits = self._merge_pair_in_splits(splits, best_pair, new_token_id)
             
-            print(f"Merging {pair} -> {new_token_id}")
-            # 3. Replace all occurrences of the pair with the new token ID.
-            tokens = self._merge_pair(tokens, pair, new_token_id)
-            
-            # 4. Store the merge rule and update the vocabulary.
-            self.merges[pair] = new_token_id
-            # The new token's byte representation is the concatenation of the
-            # bytes of the two tokens that formed it.
-            self.vocab[new_token_id] = self.vocab[pair[0]] + self.vocab[pair[1]]
+            # 6. Store the merge rule and update the vocabulary.
+            self.merges[best_pair] = new_token_id
+            self.vocab[new_token_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
+            if verbose:
+                print(f"Merge {i+1}/{num_merges}: {best_pair} -> {new_token_id} ({self.vocab[new_token_id]})")
+
+    def _get_pair_stats(self, splits, word_freqs):
+        """Helper to count pair frequencies across the word vocabulary."""
+        pair_counts = {}
+        for word, freq in word_freqs.items():
+            symbols = splits[word]
+            for pair in zip(symbols, symbols[1:]):
+                pair_counts[pair] = pair_counts.get(pair, 0) + freq
+        return pair_counts
+
+    def _merge_pair_in_splits(self, splits, pair, new_token_id):
+        """Helper to perform a merge operation on the `splits` dictionary."""
+        new_splits = {}
+        for word, split in splits.items():
+            new_split = []
+            i = 0
+            while i < len(split):
+                if i < len(split) - 1 and (split[i], split[i+1]) == pair:
+                    new_split.append(new_token_id)
+                    i += 2
+                else:
+                    new_split.append(split[i])
+                    i += 1
+            new_splits[word] = new_split
+        return new_splits
 
     def encode(self, text):
         """
         Encodes a string into a sequence of token IDs using the learned merges.
         This method should be called *after* training.
         """
-        # Start with the raw byte representation of the text.
-        tokens = list(text.encode("utf-8"))
+        # 1. Pre-tokenize the input text into chunks.
+        text_chunks = re.findall(self.pat, text)
         
-        # Keep merging until no more mergeable pairs are found.
-        while True:
-            stats = self._get_stats(tokens)
+        output_ids = []
+        for chunk in text_chunks:
+            # 2. For each chunk, convert to bytes and then apply merges.
+            tokens = list(chunk.encode("utf-8"))
             
-            # Find the next pair to merge. This is the most crucial part of encoding.
-            # We must apply the merges in the same order they were learned during training.
-            # We find the pair that exists in the current text AND has the lowest
-            # rank in our learned `self.merges`. The rank is implicitly its value
-            # (256, 257, 258...), so we just need to find the merge with the lowest value.
-            # `self.merges.get(p, float("inf"))` returns the new token ID if the pair `p`
-            # is in our merge rules, or infinity otherwise. Finding the `min`
-            # ensures we pick the earliest learned rule.
-            pair_to_merge = min(stats, key=lambda p: self.merges.get(p, float("inf")))
+            # 3. Iteratively apply learned merges.
+            while len(tokens) > 1:
+                # Find the pair with the earliest merge rule (lowest rank).
+                stats = self._get_stats(tokens)
+                pair_to_merge = min(stats, key=lambda p: self.merges.get(p, float("inf")))
+                if pair_to_merge not in self.merges:
+                    break # No more merges possible for this chunk.
+                
+                new_token_id = self.merges[pair_to_merge]
+                tokens = self._merge_pair(tokens, pair_to_merge, new_token_id)
+
+            output_ids.extend(tokens)
             
-            # If the best pair has a rank of infinity, it means no pairs in the
-            # current text are present in our learned `self.merges` rules.
-            # So, we are done encoding.
-            if self.merges.get(pair_to_merge, float("inf")) == float("inf"):
-                break
-            
-            # If we found a valid merge, get its new token ID and apply the merge.
-            new_token_id = self.merges[pair_to_merge]
-            tokens = self._merge_pair(tokens, pair_to_merge, new_token_id)
-            
-        return tokens
+        return output_ids
 
     def decode(self, ids):
         """
@@ -149,15 +182,18 @@ if __name__ == "__main__":
     # Create a tokenizer instance
     tokenizer = Tokenizer()
 
-    # Train it on the text
-    tokenizer.train(text, vocab_size=300) # Let's learn a few merges
+    # Train it on the text, with verbose output to see the merges
+    print("--- Training ---")
+    tokenizer.train(text, vocab_size=300, verbose=True)
 
     # Encode the text
+    print("\n--- Encoding ---")
     encoded_text = tokenizer.encode(text)
     print("\nEncoded Text:", encoded_text)
     print(f"Length: {len(encoded_text)}")
 
     # Decode it back
+    print("\n--- Decoding ---")
     decoded_text = tokenizer.decode(encoded_text)
     print("\nDecoded Text:", decoded_text)
     
