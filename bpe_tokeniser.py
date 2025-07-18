@@ -23,12 +23,10 @@ def bpe_tokeniser(text):
     
     """
 
-    text = "Arsenal have completed the signing of England winger Noni Madueke from Chelsea for an initial fee of £48.5m. The 23-year-old was part of Chelsea's squad at the Club World Cup in the United States but left the camp before last Sunday's 3-0 win against Paris St-Germain in the final to finalise his move to Mikel Arteta's side. Madueke has signed a five-year contract at Emirates Stadium, with his fee rising to just over £50m with add-ons. Humbled and blessed to be here. Thank you to everyone that made this possible, he wrote on Instagram."
-
     tokens = text.encode('utf-8') # raw bytes
     tokens = list(map(int, tokens) ) # convert to list of integers
-    print("length of text: ", len(text))
-    print("length of tokens: ", len(tokens))
+    # print("length of text: ", len(text))
+    # print("length of tokens: ", len(tokens))
 
     # Find the most frequent adjacent pair of characters
     def get_stats(ids):
@@ -38,12 +36,12 @@ def bpe_tokeniser(text):
         return counts
 
     stats = get_stats(tokens)
-    print(stats)
-    print(sorted(stats.items(), key=lambda x: x[1], reverse=True))
+    # print(stats)
+    # print(sorted(stats.items(), key=lambda x: x[1], reverse=True))
 
     # Merge the pair and add the new token to the vocab
-    top_pair = max(stats, key = stats.get)
-    print(top_pair)
+    # top_pair = max(stats, key = stats.get)
+    # print(top_pair)
 
     def merge_pair(ids, pair, idx):
         '''
@@ -60,7 +58,26 @@ def bpe_tokeniser(text):
                 i += 1
         return new_ids
 
-    
-    
 
+    # While Loop 
+    vocab_size = 276 # target vocab size (desired final vocab size)
+    num_merges = vocab_size - 256 # number of merges to perform
+    ids = list(tokens) # copy so we don't destroy the original
+
+    merges = {} # (int, int) -> int
+    for i in range(num_merges):
+        stats = get_stats(ids)
+        pair = max(stats, key = stats.get)
+        idx = 256 + i
+        print(f"merging {pair} into a new token {idx}")
+        ids = merge_pair(ids, pair, idx)
+        merges[pair] = idx
+    return merges, ids
+
+
+if __name__ == "__main__":
+    text = "Arsenal have completed the signing of England winger Noni Madueke from Chelsea for an initial fee of £48.5m. The 23-year-old was part of Chelsea's squad at the Club World Cup in the United States but left the camp before last Sunday's 3-0 win against Paris St-Germain in the final to finalise his move to Mikel Arteta's side. Madueke has signed a five-year contract at Emirates Stadium, with his fee rising to just over £50m with add-ons. Humbled and blessed to be here. Thank you to everyone that made this possible, he wrote on Instagram."
+    merges, ids = bpe_tokeniser(text)
+    print("Merges:", merges)
+    print("Final token IDs:", ids)
     
